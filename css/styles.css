@@ -493,3 +493,64 @@ a.stat:hover { border-color: var(--green-400); }
 .discount-field select { width: 58px; padding: 6px; }
 .discount-field input { width: 110px; padding: 6px 8px; }
 .discount-field small { display: block; font-weight: 400; }
+
+/* ---------- Mobile polish ---------- */
+.mobile-bar { display: none; }
+
+@media (max-width: 860px) {
+  /* Keep the calculator inside the screen width (no sideways scrolling) */
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .split > * { min-width: 0; }
+  table.data.breakdown { min-width: 0; }
+  .breakdown td { padding: 10px 8px; }
+  .discount-field { flex-wrap: wrap; }
+
+  /* 16px inputs stop iPhone from zooming in when a field is tapped */
+  input, select, textarea { font-size: 16px; }
+
+  /* Item search box looks like the other fields */
+  .search-wrap input {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 11px;
+    min-height: 44px;
+    background: #fff;
+  }
+  .suggest { max-height: 50vh; }
+  .suggest button { padding: 12px 14px; }
+  .item-table-wrap table.data td:last-child { justify-content: flex-end; }
+
+  /* Services: price on the right, one compact row each */
+  .check-row { grid-template-columns: 22px 1fr auto; padding: 10px 12px; }
+  .check-row > input[type="checkbox"] { width: 20px; height: 20px; }
+  .check-row .price { grid-column: 3; grid-row: 1; }
+  .check-row > span:empty { display: none; }
+  .check-row input[type="number"].hours { grid-column: 2 / -1; grid-row: 2; width: 100%; }
+
+  /* Topbar: short refresh button */
+  .topbar #refreshBtn { margin-left: 0; padding: 6px 10px; }
+
+  /* Sticky price + PDF bar at the bottom of the calculator */
+  .mobile-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: #fff;
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -6px 20px rgba(20, 51, 34, 0.08);
+    padding: 10px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  .mobile-bar-total { display: flex; flex-direction: column; min-width: 0; }
+  .mobile-bar-total span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mobile-bar-total strong { font-size: 20px; color: var(--green-800); font-variant-numeric: tabular-nums; }
+  .mobile-bar .btn { flex: 0 0 auto; }
+  body.nav-open .mobile-bar { display: none; }
+  .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+}

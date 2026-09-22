@@ -321,6 +321,13 @@ Pages.calculator = function (root, params) {
           </div>
         </div>
       </div>
+      <div class="mobile-bar">
+        <div class="mobile-bar-total">
+          <span>${state.moveType === "sharing" ? "Sharing" : "Dedicated"} · ${Helpers.escapeHtml(rec.vehicle ? rec.vehicle.name : "—")}</span>
+          <strong>${Helpers.formatMoney(finalTotal, settings.currencySymbol)}</strong>
+        </div>
+        <button class="btn" data-act="pdf-bar">Download PDF</button>
+      </div>
     `;
 
     persistDraft();
@@ -414,6 +421,11 @@ Pages.calculator = function (root, params) {
       });
     });
 
+    const barPdf = container.querySelector("[data-act=pdf-bar]");
+    if (barPdf) barPdf.addEventListener("click", () => {
+      const main = container.querySelector("[data-act=pdf]");
+      if (main) main.click();
+    });
     const pdfBtn = container.querySelector("[data-act=pdf]");
     if (pdfBtn) pdfBtn.addEventListener("click", () => downloadPdf(container));
     const resetBtn = container.querySelector("[data-act=reset]");
