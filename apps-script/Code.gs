@@ -34,9 +34,9 @@ function doGet(e) {
   try {
     var p = (e && e.parameter) || {};
     if (p.action === "ping") return out_({ ok: true, companyName: masters_().settings.companyName || "" });
-    if (p.fresh) clearCache_(); // "Refresh from sheet" button bypasses the cache
     var session = verifyToken_(p.token);
     if (!session) return out_({ error: "auth", message: "Session expired. Please sign in again." });
+    if (p.fresh) warmCache(); // "Refresh from sheet": re-read the sheet now (signed-in users only)
     return out_(loadAll_(session));
   } catch (err) {
     return out_({ error: "server", message: String(err && err.message ? err.message : err) });
@@ -76,7 +76,7 @@ function loadAll_(session) {
  * CacheService and cleared automatically whenever someone edits the sheet (onEdit),
  * when the app's "Refresh from sheet" button is used, or after CACHE_SECONDS.
  */
-var CACHE_SECONDS = 600;
+var CACHE_SECONDS = 21600; // 6 h (Apps Script maximum). Edits and the warm-up trigger refresh it sooner.
 var CACHE_KEYS = ["masters", "users"];
 
 function masters_() {
@@ -137,9 +137,35 @@ function clearCache_() {
   });
 }
 
-/** Simple trigger: any edit in the sheet clears the cache so the app sees it on the next load. */
-function onEdit() {
+/** Re-read the sheet into the cache so the next app request is fast (no cold sheet read). */
+function warmCache() {
   clearCache_();
+  SHEETS_MEMO_ = null;
+  ROWS_MEMO_ = {};
+  masters_();
+  users_();
+}
+
+/** Simple trigger: any edit in the sheet rebuilds the cache right away. */
+function onEdit() {
+  try {
+    warmCache();
+  } catch (e) {
+    clearCache_(); // fall back: at least never serve stale data
+  }
+}
+
+/**
+ * Menu: installs a trigger that rebuilds the cache every 5 minutes.
+ * Keeps the cache hot and also catches changes onEdit misses (imports, formulas, other scripts).
+ */
+function installWarmup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "warmCache") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("warmCache").timeBased().everyMinutes(5).create();
+  warmCache();
+  SpreadsheetApp.getUi().alert("Speed warm-up installed. The app cache is refreshed every 5 minutes.");
 }
 
 function readSettings_() {
@@ -262,14 +288,22 @@ function hashPassword_(username, password) {
   return raw.map(function (b) { return ("0" + (b & 0xff).toString(16)).slice(-2); }).join("");
 }
 
+var SECRET_MEMO_ = null;
+
 function secret_() {
-  var props = PropertiesService.getScriptProperties();
-  var s = props.getProperty("TOKEN_SECRET");
+  if (SECRET_MEMO_) return SECRET_MEMO_;
+  var cache = CacheService.getScriptCache();
+  var s = cache.get("tokenSecret");
   if (!s) {
-    s = Utilities.getUuid() + Utilities.getUuid();
-    props.setProperty("TOKEN_SECRET", s);
+    var props = PropertiesService.getScriptProperties();
+    s = props.getProperty("TOKEN_SECRET");
+    if (!s) {
+      s = Utilities.getUuid() + Utilities.getUuid();
+      props.setProperty("TOKEN_SECRET", s);
+    }
+    cache.put("tokenSecret", s, CACHE_SECONDS);
   }
-  return s;
+  return (SECRET_MEMO_ = s);
 }
 
 function signToken_(payload) {
@@ -304,6 +338,7 @@ function onOpen() {
     .addItem("Create missing tabs", "setupTabs")
     .addItem("Set user password…", "menuSetPassword")
     .addItem("Clear app cache", "menuClearCache")
+    .addItem("Install speed warm-up (every 5 min)", "installWarmup")
     .addSeparator()
     .addItem("Sign everyone out", "rotateSecret")
     .addToUi();
@@ -383,12 +418,13 @@ function menuSetPassword() {
 }
 
 function menuClearCache() {
-  clearCache_();
-  SpreadsheetApp.getUi().alert("Cache cleared. The app will read fresh data on its next load.");
+  warmCache();
+  SpreadsheetApp.getUi().alert("Cache rebuilt from the sheet. The app shows it on its next load.");
 }
 
 function rotateSecret() {
   PropertiesService.getScriptProperties().setProperty("TOKEN_SECRET", Utilities.getUuid() + Utilities.getUuid());
+  CacheService.getScriptCache().remove("tokenSecret");
   SpreadsheetApp.getUi().alert("Done. Everyone must sign in again.");
 }
 

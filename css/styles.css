@@ -1,3 +1,17 @@
+/* Fonts served from this site (no Google Fonts round trip) */
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("../assets/fonts/SourceSans3-Regular.ttf") format("truetype");
+  font-weight: 400 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("../assets/fonts/SourceSans3-Bold.ttf") format("truetype");
+  font-weight: 600 700;
+  font-display: swap;
+}
+
 :root {
   --green-950: #0c1f14;
   --green-900: #143322;

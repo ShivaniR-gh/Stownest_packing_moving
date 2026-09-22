@@ -5,9 +5,11 @@
 (function (global) {
   const KEY = "stownest_session";
 
+  // localStorage (not sessionStorage) so a new tab or reopened browser stays signed in
+  // until the token expires — no slow re-login each time. Token expiry still applies.
   function read() {
     try {
-      const s = JSON.parse(sessionStorage.getItem(KEY) || "null");
+      const s = JSON.parse(localStorage.getItem(KEY) || sessionStorage.getItem(KEY) || "null");
       if (!s || !s.token || !s.user || Date.now() > Number(s.user.exp || 0)) return null;
       return s;
     } catch {
@@ -18,11 +20,12 @@
   global.AuthService = {
     async login(username, password) {
       const res = await SheetApi.login(String(username || "").trim(), String(password || ""));
-      sessionStorage.setItem(KEY, JSON.stringify({ token: res.token, user: res.user }));
+      localStorage.setItem(KEY, JSON.stringify({ token: res.token, user: res.user }));
       if (res.data && global.DataStore) DataStore.set(res.data); // login already carries the sheet data
       return res.user;
     },
     logout() {
+      localStorage.removeItem(KEY);
       sessionStorage.removeItem(KEY);
     },
     token() {

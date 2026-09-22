@@ -4,15 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Stownest Storage — Vehicle & Moving Cost Calculator</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- Warm up the connection to the sheet API before the first request -->
+    <link rel="preconnect" href="https://script.google.com" crossorigin />
+    <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin />
+    <link rel="preload" href="assets/fonts/SourceSans3-Regular.ttf" as="font" type="font/ttf" crossorigin />
     <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png?v=4" />
     <link rel="icon" type="image/png" sizes="48x48" href="assets/favicon-48.png?v=4" />
     <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png?v=4" />
     <link rel="shortcut icon" href="assets/favicon-32.png?v=4" />
     <link rel="apple-touch-icon" href="assets/apple-touch.png?v=4" />
-    <link rel="stylesheet" href="css/styles.css?v=6" />
+    <link rel="stylesheet" href="css/styles.css?v=7" />
   </head>
   <body>
     <div class="app">
@@ -57,7 +58,7 @@
     <script src="js/utils/calculations.js?v=2"></script>
     <script src="js/utils/quotePdf.js?v=8"></script>
     <script src="js/services/api.js?v=2"></script>
-    <script src="js/services/auth.js?v=2"></script>
+    <script src="js/services/auth.js?v=3"></script>
     <script src="js/services/data.js?v=3"></script>
     <script src="js/pages/login.js"></script>
     <script src="js/pages/dashboard.js"></script>
