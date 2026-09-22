@@ -1,37 +1,24 @@
 window.Pages = window.Pages || {};
 
 Pages.calculator = function (root, params) {
-  const editingId = params && params.id;
-  const existing = editingId ? OrderService.get(editingId) : null;
-  function cities() {
-    return RouteService.cities();
-  }
+  const DRAFT_KEY = "stownest_quote_draft";
+  const cities = () => DataStore.cities();
+  const aliases = DataStore.aliasMap();
+  const findLane = () => Calc.findRoute(state.pickup, state.drop, DataStore.lanes(), aliases);
 
-  const state = existing
-    ? {
-        id: existing.id,
-        bookingId: existing.bookingId,
-        customerName: existing.customerName || "",
-        phone: existing.phone || "",
-        email: existing.email || "",
-        pickup: existing.pickup || "",
-        drop: existing.drop || "",
-        distanceKm: existing.distanceKm || 0,
-        moveType: existing.moveType === "sharing" ? "sharing" : "dedicated",
-        orderDate: existing.orderDate || Helpers.todayISO(),
-        notes: existing.notes || "",
-        status: existing.status || "draft",
-        items: (existing.items || []).map((r) => ({ ...r })),
-        selectedServices: (existing.selectedServices || []).map((s) => ({ ...s })),
-        showErrors: false,
-      }
-    : loadDraft() || blankOrder();
+  const state = loadDraft() || blankOrder();
 
   if (!state.moveType) state.moveType = "dedicated";
 
   function loadDraft() {
-    const draft = StorageService.getDraft && StorageService.getDraft();
+    let draft = null;
+    try {
+      draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    } catch {
+      draft = null;
+    }
     if (!draft || typeof draft !== "object") return null;
+    if (!Array.isArray(draft.selectedServices)) draft.selectedServices = [];
     draft.showErrors = false;
     if (!Array.isArray(draft.items) || !draft.items.length) draft.items = [emptyRow()];
     if (draft.moveType !== "sharing") draft.moveType = "dedicated";
@@ -40,21 +27,17 @@ Pages.calculator = function (root, params) {
 
   function persistDraft() {
     const copy = { ...state, items: state.items.map((r) => ({ ...r })), selectedServices: state.selectedServices.map((s) => ({ ...s })) };
-    StorageService.setDraft(copy);
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(copy));
+    } catch {
+      /* draft is a convenience only */
+    }
   }
 
   function blankOrder() {
-    const services = RateService.listServices(false).map((s) => ({
-      id: s.id,
-      name: s.name,
-      pricingType: s.pricingType,
-      rate: s.rate,
-      enabled: false,
-      quantity: 1,
-    }));
     return {
-      id: Helpers.uid("ord"),
-      bookingId: Helpers.nextBookingId(OrderService.list()),
+      id: Helpers.uid("qte"),
+      bookingId: Helpers.quoteId(),
       customerName: "",
       phone: "",
       email: "",
@@ -66,56 +49,52 @@ Pages.calculator = function (root, params) {
       notes: "",
       status: "draft",
       items: [emptyRow()],
-      selectedServices: services,
+      selectedServices: [],
+      discountType: "amount",
+      discountValue: 0,
       showErrors: false,
     };
   }
 
   function emptyRow() {
-    return { key: Helpers.uid("row"), itemId: "", name: "", category: "", unit: "pcs", quantity: 1, cftPerItem: 0 };
+    return { key: Helpers.uid("row"), itemId: "", name: "", unit: "pcs", quantity: 1, cftPerItem: 0 };
   }
 
-  function liveMasters() {
+  function fallbackRates() {
+    const s = DataStore.settings();
     return {
-      items: ItemService.list(false),
-      vehicles: VehicleService.list(false),
-      distance: RateService.getDistance(),
-      services: RateService.listServices(false),
-      routes: RouteService.list(),
+      perCftRate: Helpers.number(s.perCftRate),
+      ratePerKm: Helpers.number(s.ratePerKm),
+      minimumCharge: Helpers.number(s.minimumCharge),
     };
   }
 
   function applyLaneFromLocations() {
-    const lane = Calc.findRoute(state.pickup, state.drop, RouteService.list());
+    const lane = findLane();
     if (lane) state.distanceKm = Helpers.number(lane.km);
     return lane;
   }
 
+  /** Services and their prices always come from the sheet; the quote only remembers which are ticked. */
   function syncServiceCatalog() {
-    const catalog = RateService.listServices(false);
     const byId = Object.fromEntries(state.selectedServices.map((s) => [s.id, s]));
-    const extras = state.selectedServices.filter((s) => s.custom);
-    state.selectedServices = catalog
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        pricingType: "fixed",
-        rate: s.rate,
-        enabled: byId[s.id] ? !!byId[s.id].enabled : false,
-        quantity: 1,
-        custom: false,
-      }))
-      .concat(extras);
+    state.selectedServices = DataStore.services(false).map((s) => ({
+      id: s.id,
+      name: s.name,
+      pricingType: s.pricingType || "fixed",
+      rate: Helpers.number(s.rate),
+      enabled: byId[s.id] ? !!byId[s.id].enabled : false,
+      quantity: byId[s.id] ? Math.max(1, Helpers.number(byId[s.id].quantity, 1)) : 1,
+    }));
   }
 
   function refreshItemCftFromMaster() {
-    const items = ItemService.list(true);
+    const items = DataStore.items(true);
     state.items.forEach((row) => {
       if (!row.itemId) return;
       const master = items.find((i) => i.id === row.itemId);
       if (master) {
         row.name = master.name;
-        row.category = master.category;
         row.unit = master.unit;
         row.cftPerItem = Helpers.number(master.cft);
       }
@@ -126,40 +105,37 @@ Pages.calculator = function (root, params) {
     refreshItemCftFromMaster();
     syncServiceCatalog();
     const lane = applyLaneFromLocations();
-    const masters = liveMasters();
     return Calc.calculateOrderTotal({
       items: state.items,
       distanceKm: state.distanceKm,
       pickup: state.pickup,
       drop: state.drop,
       moveType: state.moveType,
-      vehicles: masters.vehicles,
-      distance: masters.distance,
+      vehicles: DataStore.vehicles(false),
+      distance: fallbackRates(),
       selectedServices: state.selectedServices,
-      routes: masters.routes,
+      routes: DataStore.lanes(),
+      aliases,
     });
   }
 
-  function snapshotTotals(calc) {
-    return {
-      totalCft: calc.totalCft,
-      itemCount: calc.itemCount,
-      vehicleId: calc.vehicle && calc.vehicle.id,
-      vehicleName: calc.vehicle ? calc.vehicle.name : calc.recommendation.message,
-      vehicleCapacity: calc.vehicle ? calc.vehicle.maxCft : calc.recommendation.largest && calc.recommendation.largest.maxCft,
-      moveType: calc.moveType,
-      dedicatedAmount: calc.dedicated && calc.dedicated.amount,
-      sharingAmount: calc.sharing && calc.sharing.amount,
-      transportAmount: calc.transportAmount,
-      delivery: calc.delivery,
-      pricingMode: calc.pricingMode,
-      perCftRate: calc.perCftRate,
-      cftCharge: calc.cftCharge,
-      distanceCharge: calc.distance.amount,
-      serviceTotal: calc.serviceTotal,
-      total: calc.total,
-      status: calc.recommendation.status,
-    };
+  /** Transport part of the price (lane / fallback). Additional services are fixed and never discounted. */
+  function transportBase(calc) {
+    const services = (calc.serviceLines || []).reduce((sum, l) => sum + Helpers.number(l.amount), 0);
+    return Math.max(0, Helpers.number(calc.total) - services);
+  }
+
+  /** Discount is a per-quote input (not sheet data). Applies to transport only, never more than it. */
+  function discountFor(subtotal) {
+    const v = Math.max(0, Helpers.number(state.discountValue));
+    const amt = state.discountType === "percent" ? (subtotal * Math.min(v, 100)) / 100 : Math.min(v, subtotal);
+    return Math.round(amt); // whole rupees
+  }
+
+  function deliveryText(calc) {
+    if (calc.delivery) return calc.delivery;
+    if (calc.route && calc.route.delivery) return calc.route.delivery;
+    return "To be confirmed";
   }
 
   function collectForm(container) {
@@ -171,10 +147,14 @@ Pages.calculator = function (root, params) {
     state.drop = container.querySelector("[name=drop]").value;
     state.moveType = container.querySelector("[name=moveType]").value === "sharing" ? "sharing" : "dedicated";
     const kmInput = container.querySelector("[name=distanceKm]");
-    const lane = Calc.findRoute(state.pickup, state.drop, RouteService.list());
+    const lane = findLane();
     if (lane) state.distanceKm = Helpers.number(lane.km);
     else state.distanceKm = Helpers.number(kmInput.value);
     state.notes = container.querySelector("[name=notes]").value;
+    const dType = container.querySelector("[name=discountType]");
+    const dVal = container.querySelector("[name=discountValue]");
+    if (dType) state.discountType = dType.value === "percent" ? "percent" : "amount";
+    if (dVal) state.discountValue = Math.max(0, Helpers.number(dVal.value));
     persistDraft();
   }
 
@@ -190,10 +170,12 @@ Pages.calculator = function (root, params) {
 
   function paint(focusKey) {
     const calc = compute();
-    const errors = state.showErrors ? Validation.validateCustomer(state) : {};
+    const errors = {};
     const rec = calc.recommendation;
     const overflow = rec.status === "overflow";
-    const settings = SettingsService.get();
+    const settings = DataStore.settings();
+    const discount = discountFor(transportBase(calc));
+    const finalTotal = Math.max(0, calc.total - discount);
     const laneLocked = !!calc.route;
     const dedicatedAmt = calc.dedicated && calc.dedicated.available ? calc.dedicated.amount : null;
     const sharingAmt = calc.sharing && calc.sharing.available ? calc.sharing.amount : null;
@@ -204,8 +186,8 @@ Pages.calculator = function (root, params) {
           <div class="card" style="margin-bottom:16px">
             <div class="card-hd"><h3>Customer information</h3></div>
             <div class="card-bd">
-              <div class="form-grid form-grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-                ${field("bookingId", "Order / Booking ID", state.bookingId)}
+              <div class="form-grid form-grid-2">
+                ${field("bookingId", "Quote ID", state.bookingId)}
                 ${field("customerName", "Customer Name", state.customerName, errors.customerName)}
                 ${field("phone", "Phone Number", state.phone, errors.phone)}
                 ${field("email", "Email", state.email, errors.email)}
@@ -224,8 +206,8 @@ Pages.calculator = function (root, params) {
                     Helpers.slug(state.pickup) && Helpers.slug(state.pickup) === Helpers.slug(state.drop)
                       ? "Pickup and drop are the same city — pick two different cities (e.g. Bangalore → Chennai = 360 KM)."
                       : laneLocked
-                      ? "Auto-filled from Cities & Lanes (" + Helpers.number(calc.distanceKm) + " KM" + (calc.delivery ? ", " + Helpers.escapeHtml(calc.delivery) : "") + ")"
-                      : "No lane for this pair yet. Add it under Admin → Cities & Lanes, or type KM for a custom move."
+                      ? "Auto-filled from the Lanes sheet (" + Helpers.number(calc.distanceKm) + " KM" + (calc.delivery ? ", " + Helpers.escapeHtml(calc.delivery) : "") + ")"
+                      : "No lane for this pair in the Lanes sheet — type KM to use fallback pricing."
                   }</div>
                 </div>
                 <div class="field">
@@ -234,7 +216,7 @@ Pages.calculator = function (root, params) {
                     <option value="dedicated" ${state.moveType === "dedicated" ? "selected" : ""}>Dedicated</option>
                     <option value="sharing" ${state.moveType === "sharing" ? "selected" : ""}>Sharing</option>
                   </select>
-                  <div class="help">Dedicated bills the full vehicle. Sharing bills used CFT of the sharing vehicle rate.</div>
+                  <div class="help">Items pick the vehicle size. Then Sharing or Dedicated uses that vehicle’s sheet price for the lane.</div>
                 </div>
               </div>
             </div>
@@ -267,10 +249,9 @@ Pages.calculator = function (root, params) {
           <div class="card" style="margin-bottom:16px">
             <div class="card-hd">
               <h3>Additional services</h3>
-              <button class="btn sm secondary" data-act="add-svc">Add extra service</button>
             </div>
             <div class="card-bd checks" id="svcList">
-              ${state.selectedServices.map(serviceRow).join("") || `<div class="empty">No services configured. Add Floor Assembly / Disassembly from Rate Configuration or use Add extra service.</div>`}
+              ${state.selectedServices.map(serviceRow).join("") || `<div class="empty">No active services in the Services sheet.</div>`}
             </div>
           </div>
 
@@ -279,9 +260,8 @@ Pages.calculator = function (root, params) {
             <div class="card-bd">
               <div class="field"><textarea name="notes" rows="3" placeholder="Internal remarks">${Helpers.escapeHtml(state.notes)}</textarea></div>
               <div class="toolbar" style="margin-top:12px">
-                <button class="btn" data-act="save">Save order</button>
-                <button class="btn secondary" data-act="save-confirm">Save as confirmed</button>
-                <a class="btn secondary" href="#/orders">Back to orders</a>
+                <button class="btn" data-act="pdf">Download PDF</button>
+                <button class="btn secondary" data-act="reset">Clear quote</button>
               </div>
             </div>
           </div>
@@ -297,16 +277,17 @@ Pages.calculator = function (root, params) {
               <div class="row"><span>${overflow ? "Overflow" : "Remaining capacity"}</span><strong>${overflow ? rec.overflow.toFixed(1) : rec.remaining.toFixed(1)} CFT</strong></div>
               <div class="row"><span>Lane</span><strong>${calc.route ? Helpers.escapeHtml(calc.route.from + " → " + calc.route.to) : Helpers.slug(state.pickup) === Helpers.slug(state.drop) && state.pickup ? "Same city" : "Not in matrix"}</strong></div>
               <div class="row"><span>Distance</span><strong>${Helpers.number(calc.distanceKm)} KM</strong></div>
-              ${overflow ? `<p class="help" style="color:#f8d7c4;margin:10px 0 0">Total CFT exceeds the largest configured vehicle. Split the load or add a larger vehicle in Vehicle Master.</p>` : ""}
+              ${overflow ? `<p class="help" style="color:#f8d7c4;margin:10px 0 0">Total CFT exceeds the largest configured vehicle. Split the load, or add a larger vehicle to the Vehicles sheet.</p>` : ""}
             </div>
           </div>
 
           <div class="card" style="margin-bottom:16px">
-            <div class="card-hd"><h3>Sharing vs Dedicated</h3></div>
+            <div class="card-hd"><h3>${state.moveType === "sharing" ? "Sharing price" : "Dedicated price"}</h3></div>
             <div class="card-bd">
-              <div class="row"><span>Dedicated ${state.moveType === "dedicated" ? "(selected)" : ""}</span><strong>${dedicatedAmt == null ? "—" : Helpers.formatMoney(dedicatedAmt, settings.currencySymbol)}</strong></div>
-              <div class="row"><span>Sharing ${state.moveType === "sharing" ? "(selected)" : ""}</span><strong>${sharingAmt == null ? "—" : Helpers.formatMoney(sharingAmt, settings.currencySymbol)}</strong></div>
-              <p class="help" style="margin:10px 0 0">Vehicle is picked from item CFT. Dedicated uses the full lane price. Sharing uses (order CFT ÷ vehicle CFT) × sharing lane price. Edit the matrix under Rate Configuration.</p>
+              <div class="price-hero">${Helpers.formatMoney(finalTotal, settings.currencySymbol)}</div>
+              ${discount > 0 ? `<div class="help">Includes ${Helpers.formatMoney(discount, settings.currencySymbol)} discount on transport</div>` : ""}
+              <div class="delivery-pill">🚚 Estimated delivery: <strong>${Helpers.escapeHtml(deliveryText(calc))}</strong></div>
+              <p class="help" style="margin:10px 0 0">Only the selected move type is billed. Switch Dedicated / Sharing above to use the other lane rate.</p>
             </div>
           </div>
 
@@ -315,10 +296,25 @@ Pages.calculator = function (root, params) {
             <div class="card-bd table-wrap">
               <table class="data breakdown">
                 <tbody>
-                  <tr><td>Transport (${Helpers.escapeHtml(calc.transportFormula || "—")})</td><td class="num">${Helpers.formatMoney(calc.transportAmount, settings.currencySymbol)}</td></tr>
+                  <tr><td>Transport (${Helpers.escapeHtml(calc.pricingMode === "fallback" ? calc.totalCft.toFixed(1) + " CFT × " + calc.perCftRate : calc.transportFormula || "—")})</td><td class="num">${Helpers.formatMoney(calc.pricingMode === "fallback" ? calc.cftCharge : calc.transportAmount, settings.currencySymbol)}</td></tr>
                   ${calc.pricingMode === "fallback" ? `<tr><td>Distance fallback (${Helpers.escapeHtml(calc.distance.formula)})</td><td class="num">${Helpers.formatMoney(calc.distance.amount, settings.currencySymbol)}</td></tr>` : ""}
-                  ${calc.serviceLines.map((l) => `<tr><td>${Helpers.escapeHtml(l.name)} <span class="hint" style="color:var(--muted);font-weight:400">· ${Helpers.escapeHtml(l.formula)}</span></td><td class="num">${Helpers.formatMoney(l.amount, settings.currencySymbol)}</td></tr>`).join("")}
-                  <tr class="total-row"><td>Total (${state.moveType === "sharing" ? "Sharing" : "Dedicated"})</td><td class="num">${Helpers.formatMoney(calc.total, settings.currencySymbol)}</td></tr>
+                  <tr class="discount-row">
+                    <td>
+                      <div class="discount-field">
+                        <span>Discount <small class="help">on transport</small></span>
+                        <select name="discountType" aria-label="Discount type">
+                          <option value="amount" ${state.discountType !== "percent" ? "selected" : ""}>${Helpers.escapeHtml(settings.currencySymbol || "₹")}</option>
+                          <option value="percent" ${state.discountType === "percent" ? "selected" : ""}>%</option>
+                        </select>
+                        <input name="discountValue" type="number" min="0" step="any" inputmode="decimal" value="${Helpers.number(state.discountValue) || ""}" placeholder="0" />
+                      </div>
+                    </td>
+                    <td class="num">${discount > 0 ? "− " + Helpers.formatMoney(discount, settings.currencySymbol) : Helpers.formatMoney(0, settings.currencySymbol)}</td>
+                  </tr>
+                  ${discount > 0 ? `<tr class="subtotal-row"><td>Transport after discount</td><td class="num">${Helpers.formatMoney(transportBase(calc) - discount, settings.currencySymbol)}</td></tr>` : ""}
+                  ${calc.serviceLines.map((l) => `<tr class="svc-row"><td>${Helpers.escapeHtml(l.name)} <span class="hint" style="color:var(--muted);font-weight:400">· ${Helpers.escapeHtml(l.formula)}</span></td><td class="num">${Helpers.formatMoney(l.amount, settings.currencySymbol)}</td></tr>`).join("")}
+                  <tr class="total-row"><td>Final price (${state.moveType === "sharing" ? "Sharing" : "Dedicated"})</td><td class="num">${Helpers.formatMoney(finalTotal, settings.currencySymbol)}</td></tr>
+                  <tr><td colspan="2" class="help">Estimated delivery: <strong>${Helpers.escapeHtml(deliveryText(calc))}</strong></td></tr>
                 </tbody>
               </table>
             </div>
@@ -359,11 +355,16 @@ Pages.calculator = function (root, params) {
   }
 
   function serviceRow(s) {
+    const price = s.pricingType === "percentage" ? Helpers.number(s.rate) + "%" : Helpers.formatMoney(s.rate);
+    const hours =
+      s.pricingType === "per_hour"
+        ? `<input type="number" class="hours" min="1" step="1" data-svc-hours="${s.id}" value="${Helpers.number(s.quantity, 1)}" title="Hours" />`
+        : `<span></span>`;
     return `<label class="check-row">
       <input type="checkbox" data-svc="${s.id}" ${s.enabled ? "checked" : ""} />
-      <span><strong>${Helpers.escapeHtml(s.name)}</strong><br><span class="help">Fixed</span></span>
-      <input type="number" min="0" step="1" data-svc-rate="${s.id}" value="${Helpers.number(s.rate)}" title="Fixed price" />
-      ${s.custom ? `<button type="button" class="btn sm danger-outline" data-act="remove-svc" data-sid="${s.id}">Remove</button>` : `<span></span>`}
+      <span><strong>${Helpers.escapeHtml(s.name)}</strong><br><span class="help">${Helpers.escapeHtml(Helpers.pricingTypeLabel(s.pricingType))}</span></span>
+      ${hours}
+      <span class="price">${price}</span>
     </label>`;
   }
 
@@ -381,11 +382,11 @@ Pages.calculator = function (root, params) {
           const s = state.selectedServices.find((x) => x.id === svcId);
           if (s) s.enabled = el.checked;
         }
-        const rateId = el.getAttribute("data-svc-rate");
-        if (rateId) {
-          const s = state.selectedServices.find((x) => x.id === rateId);
+        const hoursId = el.getAttribute("data-svc-hours");
+        if (hoursId) {
+          const s = state.selectedServices.find((x) => x.id === hoursId);
           if (s) {
-            s.rate = Math.max(0, Helpers.number(el.value));
+            s.quantity = Math.max(1, Helpers.number(el.value, 1));
             s.enabled = true;
           }
         }
@@ -413,37 +414,28 @@ Pages.calculator = function (root, params) {
       });
     });
 
-    const addSvc = container.querySelector("[data-act=add-svc]");
-    if (addSvc) {
-      addSvc.addEventListener("click", () => {
-        collectForm(container);
-        const name = prompt("Extra service name", "Extra service");
-        if (!name || !name.trim()) return;
-        const rateRaw = prompt("Fixed price", "0");
-        const rate = Math.max(0, Helpers.number(rateRaw));
-        state.selectedServices.push({
-          id: Helpers.uid("svc"),
-          name: name.trim(),
-          pricingType: "fixed",
-          rate,
-          enabled: true,
-          quantity: 1,
-          custom: true,
-        });
-        paint();
+    const pdfBtn = container.querySelector("[data-act=pdf]");
+    if (pdfBtn) pdfBtn.addEventListener("click", () => downloadPdf(container));
+    const resetBtn = container.querySelector("[data-act=reset]");
+    if (resetBtn) resetBtn.addEventListener("click", async () => {
+      const ok = await UI.confirmModal({
+        title: "Clear quote",
+        body: "Clear this quote? Customer and item fields will reset. Nothing is stored as an order.",
+        confirmText: "Clear",
+        danger: true,
       });
-    }
-    container.querySelectorAll("[data-act=remove-svc]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        const id = btn.getAttribute("data-sid");
-        state.selectedServices = state.selectedServices.filter((s) => s.id !== id);
-        paint();
+      if (!ok) return;
+      const fresh = blankOrder();
+      Object.keys(fresh).forEach((k) => {
+        state[k] = fresh[k];
       });
+      try {
+        localStorage.removeItem(DRAFT_KEY);
+      } catch {
+        /* ignore */
+      }
+      paint();
     });
-
-    container.querySelector("[data-act=save]").addEventListener("click", () => save("draft", container));
-    container.querySelector("[data-act=save-confirm]").addEventListener("click", () => save("confirmed", container));
   }
 
   function openSuggest(input) {
@@ -452,38 +444,24 @@ Pages.calculator = function (root, params) {
     const typed = input.value.trim();
     const selectedName = row && row.name ? String(row.name) : "";
     const q = typed && typed !== selectedName ? Helpers.slug(typed) : "";
-    const all = ItemService.list(false).slice().sort((a, b) => {
-      const c = String(a.category).localeCompare(String(b.category));
-      return c || String(a.name).localeCompare(String(b.name));
-    });
-    const items = all.filter((i) => !q || Helpers.slug(i.name + " " + i.category).includes(q));
+    const all = DataStore.items(false)
+      .slice()
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const items = all.filter((i) => !q || Helpers.slug(i.name).includes(q));
 
     const box = document.createElement("div");
     box.className = "suggest suggest-portal";
-    const groups = {};
-    items.forEach((i) => {
-      const cat = i.category || "General";
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(i);
-    });
-    if (!items.length) {
-      box.innerHTML = `<div class="suggest-empty">No matching items</div>`;
-    } else {
-      box.innerHTML = Object.keys(groups)
-        .map((cat) => {
-          const rows = groups[cat]
-            .map(
-              (i) =>
-                `<button type="button" data-id="${i.id}">
-                  <span class="suggest-name">${Helpers.escapeHtml(i.name)}</span>
-                  <span class="suggest-meta">${Helpers.escapeHtml(i.category)} · ${i.cft} CFT</span>
-                </button>`
-            )
-            .join("");
-          return `<div class="suggest-cat">${Helpers.escapeHtml(cat)}</div>${rows}`;
-        })
-        .join("");
-    }
+    box.innerHTML = items.length
+      ? items
+          .map(
+            (i) =>
+              `<button type="button" data-id="${i.id}">
+                <span class="suggest-name">${Helpers.escapeHtml(i.name)}</span>
+                <span class="suggest-meta">${i.cft} CFT</span>
+              </button>`
+          )
+          .join("")
+      : `<div class="suggest-empty">No matching items</div>`;
 
     input.parentElement.appendChild(box);
     box.style.position = "absolute";
@@ -498,14 +476,13 @@ Pages.calculator = function (root, params) {
       e.preventDefault();
       const btn = e.target.closest("button[data-id]");
       if (!btn) return;
-      const item = ItemService.get(btn.getAttribute("data-id"));
+      const item = DataStore.item(btn.getAttribute("data-id"));
       const key = input.closest("tr").getAttribute("data-key");
       const rec = state.items.find((r) => r.key === key);
       if (item && rec) {
         rec.itemId = item.id;
         rec.name = item.name;
-        rec.category = item.category;
-        rec.unit = item.unit;
+          rec.unit = item.unit;
         rec.cftPerItem = item.cft;
       }
       document.querySelectorAll(".suggest").forEach((s) => s.remove());
@@ -522,88 +499,95 @@ Pages.calculator = function (root, params) {
     });
   }
 
-  function save(status, container) {
+  async function downloadPdf(container) {
     collectForm(container);
-    state.showErrors = true;
-    const errors = Validation.validateCustomer(state);
-    if (errors.customerName) {
-      UI.toast(errors.customerName, "error");
-      paint();
-      return;
-    }
     const validRows = state.items.filter((r) => r.itemId && Helpers.number(r.quantity) > 0);
-    if (!validRows.length) {
-      UI.toast("Add at least one item with quantity greater than 0.", "error");
-      return;
-    }
-    if (state.items.some((r) => r.itemId && Helpers.number(r.quantity) <= 0)) {
-      UI.toast("Quantity must be greater than 0.", "error");
+    const missing = [];
+    if (!String(state.customerName || "").trim()) missing.push("customer name");
+    if (!state.pickup || !state.drop) missing.push("pickup and drop city");
+    if (!validRows.length) missing.push("at least one item");
+    if (missing.length) {
+      UI.toast("Add " + missing.join(", ") + " before downloading the PDF.", "error");
       return;
     }
     const calc = compute();
-    const order = {
-      ...state,
-      items: validRows,
-      status,
-      totals: snapshotTotals(calc),
-    };
-    OrderService.save(order);
-    StorageService.clearDraft();
-    UI.toast(status === "confirmed" ? "Order saved as confirmed." : "Order saved.");
-    location.hash = "#/orders/view/" + order.id;
+    if (calc.pricingMode === "unavailable") {
+      UI.toast(calc.transportFormula + ". Switch move type or check the Lanes sheet.", "error");
+      return;
+    }
+    const s = DataStore.settings();
+    const rec = calc.recommendation || {};
+    const vehicle = rec.vehicle;
+    const today = new Date();
+    const fmt = (d) => d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const validDays = Helpers.number(s.quoteValidityDays);
+    const typeLabel = state.moveType === "sharing" ? "Sharing" : "Dedicated";
+
+    const btn = container.querySelector("[data-act=pdf]");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Preparing PDF…";
+    }
+    try {
+      const file = await QuotePdf.download({
+        companyName: s.companyName || "StowNest",
+        companyTag: s.companyTagline || "Storage & Moving",
+        companyAddress: s.companyAddress || "",
+        companyPhone: s.companyPhone || "",
+        companyEmail: s.companyEmail || "",
+        companyWebsite: s.companyWebsite || "",
+        companyGstin: s.companyGstin || "",
+        currencySymbol: s.currencySymbol || "₹",
+        terms: s.quoteTerms || "",
+        quoteDate: fmt(today),
+        validUntil: validDays > 0 ? fmt(new Date(today.getTime() + validDays * 86400000)) : "",
+        bookingId: state.bookingId || "",
+        customerName: state.customerName || "",
+        phone: state.phone || "",
+        email: state.email || "",
+        pickup: state.pickup || "",
+        drop: state.drop || "",
+        distanceKm: Helpers.number(calc.distanceKm),
+        delivery: deliveryText(calc),
+        moveType: state.moveType,
+        vehicleName: vehicle ? vehicle.name : rec.message || "Not assigned",
+        vehicleCapacity: vehicle ? Helpers.number(vehicle.maxCft) : 0,
+        overflow: rec.status === "overflow",
+        totalCft: calc.totalCft,
+        items: validRows.map((r) => ({
+          name: r.name,
+          quantity: Helpers.number(r.quantity),
+          cftPerItem: Helpers.number(r.cftPerItem),
+          totalCft: Calc.calculateItemCft(r.quantity, r.cftPerItem),
+        })),
+        transportLabel:
+          calc.pricingMode === "route" && vehicle
+            ? "Transport — " + vehicle.name + ", " + typeLabel + " (" + calc.route.from + " → " + calc.route.to + ")"
+            : "Transport — volume charge (" + calc.totalCft.toFixed(1) + " CFT × " + calc.perCftRate + ")",
+        transportAmount: calc.pricingMode === "route" ? calc.transportAmount : calc.cftCharge,
+        fallbackDistanceAmount: calc.pricingMode === "fallback" ? calc.distance.amount : 0,
+        fallbackDistanceLabel: "Distance charge (" + Helpers.number(calc.distanceKm) + " KM × " + calc.distance.rate + ")",
+        services: (calc.serviceLines || []).map((l) => ({
+          name: l.name,
+          detail: l.pricingType === "fixed" ? "" : l.formula,
+          amount: l.amount,
+        })),
+        discount: discountFor(transportBase(calc)),
+        discountLabel: "Discount on transport" + (state.discountType === "percent" ? " (" + Math.min(100, Helpers.number(state.discountValue)) + "%)" : ""),
+        total: Math.max(0, calc.total - discountFor(transportBase(calc))),
+        notes: state.notes || "",
+      });
+      UI.toast("Downloaded " + file);
+    } catch (err) {
+      console.error(err);
+      UI.toast("Could not create the PDF: " + (err.message || err), "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Download PDF";
+      }
+    }
   }
 
-  window.addEventListener("beforeunload", persistDraft);
-  persistDraft();
   paint();
-};
-
-Pages.orderDetail = function (root, id) {
-  const order = OrderService.get(id);
-  if (!order) {
-    root.innerHTML = `<div class="empty"><h4>Order not found</h4><a class="btn" href="#/orders">Back</a></div>`;
-    return;
-  }
-  const t = order.totals || {};
-  root.innerHTML = `
-    <div class="toolbar" style="margin-bottom:16px">
-      <a class="btn" href="#/calculator?id=${order.id}">Edit order</a>
-      <button class="btn secondary" id="dup">Duplicate</button>
-      <a class="btn secondary" href="#/orders">All orders</a>
-    </div>
-    <div class="grid-3" style="margin-bottom:16px">
-      <div class="stat"><div class="lbl">Customer</div><div class="val" style="font-size:18px">${Helpers.escapeHtml(order.customerName)}</div><div class="sub">${Helpers.escapeHtml(order.phone || "")} ${Helpers.escapeHtml(order.email || "")}</div></div>
-      <div class="stat"><div class="lbl">Volume / vehicle</div><div class="val" style="font-size:18px">${Helpers.number(t.totalCft).toFixed(1)} CFT</div><div class="sub">${Helpers.escapeHtml(t.vehicleName || "—")}</div></div>
-      <div class="stat"><div class="lbl">Total amount</div><div class="val">${Helpers.formatMoney(t.total)}</div><div class="sub">${Helpers.escapeHtml(order.status)}</div></div>
-    </div>
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-hd"><h3>Move details</h3></div>
-        <div class="card-bd">
-          <p><strong>Booking ID:</strong> ${Helpers.escapeHtml(order.bookingId)}</p>
-          <p><strong>Move type:</strong> ${Helpers.escapeHtml((order.moveType || "dedicated") === "sharing" ? "Sharing" : "Dedicated")}</p>
-          <p><strong>Pickup:</strong> ${Helpers.escapeHtml(order.pickup || "—")}</p>
-          <p><strong>Drop:</strong> ${Helpers.escapeHtml(order.drop || "—")}</p>
-          <p><strong>Distance:</strong> ${Helpers.number(order.distanceKm)} KM${order.totals && order.totals.delivery ? " · " + Helpers.escapeHtml(order.totals.delivery) : ""}</p>
-          ${order.notes ? `<p><strong>Notes:</strong> ${Helpers.escapeHtml(order.notes)}</p>` : ""}
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-hd"><h3>Items</h3></div>
-        <div class="card-bd table-wrap">
-          <table class="data">
-            <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">CFT</th><th class="num">Total</th></tr></thead>
-            <tbody>
-              ${(order.items || []).map((r) => `<tr><td>${Helpers.escapeHtml(r.name)}</td><td class="num">${r.quantity}</td><td class="num">${r.cftPerItem}</td><td class="num">${Calc.calculateItemCft(r.quantity, r.cftPerItem).toFixed(2)}</td></tr>`).join("")}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-  root.querySelector("#dup").addEventListener("click", () => {
-    const copy = OrderService.duplicate(order.id);
-    UI.toast("Order duplicated.");
-    location.hash = "#/calculator?id=" + copy.id;
-  });
 };

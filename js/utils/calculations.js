@@ -26,24 +26,20 @@
     }, 0);
   }
 
-  function normalizeCity(name) {
-    let s = Helpers.slug(name);
-    if (s === "kolkatta") s = "kolkata";
-    if (s === "bengaluru") s = "bangalore";
-    return s;
+  /** Aliases come from the sheet's Cities tab ("aliases" column), e.g. Bengaluru → Bangalore. */
+  function normalizeCity(name, aliases) {
+    const s = Helpers.slug(name);
+    return (aliases && aliases[s]) || s;
   }
 
-  function findRoute(pickup, drop, routes) {
-    const a = normalizeCity(pickup);
-    const b = normalizeCity(drop);
+  function findRoute(pickup, drop, routes, aliases) {
+    const a = normalizeCity(pickup, aliases);
+    const b = normalizeCity(drop, aliases);
     if (!a || !b) return null;
-    return (
-      (routes || []).find((r) => {
-        const from = normalizeCity(r.from);
-        const to = normalizeCity(r.to);
-        return (from === a && to === b) || (from === b && to === a);
-      }) || null
-    );
+    const list = routes || [];
+    const match = (x, y) => list.find((r) => normalizeCity(r.from, aliases) === x && normalizeCity(r.to, aliases) === y);
+    // Exact direction first (e.g. Chennai → Bangalore row). If only the opposite row exists, use it for both directions.
+    return match(a, b) || match(b, a) || null;
   }
 
   function tablePrice(route, vehicleId, moveType) {
@@ -177,22 +173,15 @@
     }
     const cap = Helpers.number(vehicle.maxCft) || 1;
     const fillRatio = Math.min(1, Helpers.number(totalCft) / cap);
-    if (moveType === "sharing") {
-      const amount = Math.round(vehiclePrice * fillRatio);
-      return {
-        available: true,
-        vehiclePrice,
-        amount,
-        fillRatio,
-        formula: `${totalCft.toFixed(1)} / ${cap} CFT × ${vehiclePrice} sharing`,
-      };
-    }
     return {
       available: true,
       vehiclePrice,
       amount: vehiclePrice,
       fillRatio,
-      formula: `Full ${vehicle.name} dedicated`,
+      formula:
+        moveType === "sharing"
+          ? `${vehicle.name} sharing rate for this lane`
+          : `${vehicle.name} dedicated rate for this lane`,
     };
   }
 
@@ -202,7 +191,7 @@
     const itemCount = totalItemCount(rows);
     const boxes = boxCount(rows);
     const moveType = input.moveType === "sharing" ? "sharing" : "dedicated";
-    const route = findRoute(input.pickup, input.drop, input.routes || []);
+    const route = findRoute(input.pickup, input.drop, input.routes || [], input.aliases);
     const distanceKm = route ? Helpers.number(route.km) : Helpers.number(input.distanceKm);
     const rec = getRecommendedVehicle(totalCft, input.vehicles, route, moveType);
     const vehicle = rec.vehicle;

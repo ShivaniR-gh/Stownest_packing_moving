@@ -19,7 +19,7 @@
 
   function formatMoney(amount, symbol) {
     const n = Number(amount) || 0;
-    const s = symbol || (global.StorageService && StorageService.getSettings().currencySymbol) || "₹";
+    const s = symbol || (global.DataStore && DataStore.currency()) || "₹";
     return s + n.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 0 });
   }
 
@@ -43,28 +43,11 @@
       .replace(/\s+/g, " ");
   }
 
-  function downloadJson(filename, data) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function nextBookingId(orders) {
-    const year = new Date().getFullYear();
-    const prefix = "ORD-" + year + "-";
-    let max = 0;
-    (orders || []).forEach((o) => {
-      const id = o.bookingId || o.id || "";
-      if (String(id).startsWith(prefix)) {
-        const n = Number(String(id).slice(prefix.length));
-        if (n > max) max = n;
-      }
-    });
-    return prefix + String(max + 1).padStart(4, "0");
+  /** Quote reference, e.g. Q-260921-4F7K (date + random). Quotes are not stored anywhere. */
+  function quoteId() {
+    const d = new Date();
+    const ymd = String(d.getFullYear()).slice(-2) + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+    return "Q-" + ymd + "-" + Math.random().toString(36).slice(2, 6).toUpperCase();
   }
 
   function pricingTypeLabel(type) {
@@ -87,8 +70,7 @@
     number,
     escapeHtml,
     slug,
-    downloadJson,
-    nextBookingId,
+    quoteId,
     pricingTypeLabel,
   };
 })(window);
